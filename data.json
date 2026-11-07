@@ -1,0 +1,30 @@
+{
+  "books": [
+    {
+      "isbn": "9780132350884",
+      "title": "Clean Code",
+      "author": "Robert C. Martin"
+    },
+    {
+      "isbn": "9781492056355",
+      "title": "Fluent Python",
+      "author": "Luciano Ramalho"
+    },
+    {
+      "isbn": "9780262046305",
+      "title": "Introduction to Algorithms",
+      "author": "Thomas H. Cormen"
+    },
+    {
+      "isbn": "9781593279288",
+      "title": "Python Crash Course",
+      "author": "Eric Matthes"
+    },
+    {
+      "isbn": "1234567890",
+      "title": "abc",
+      "author": "def"
+    }
+  ],
+  "records": {}
+}

@@ -1,4 +1,26 @@
 {
+  "accounts": [
+    {
+      "username": "admin",
+      "password": "admin123",
+      "role": "admin"
+    },
+    {
+      "username": "alice",
+      "password": "alice123",
+      "role": "user"
+    },
+    {
+      "username": "bob",
+      "password": "bob123",
+      "role": "user"
+    },
+    {
+      "username": "abc",
+      "password": "abc123",
+      "role": "user"
+    }
+  ],
   "books": [
     {
       "isbn": "9780132350884",
@@ -25,6 +47,5 @@
       "title": "abc",
       "author": "def"
     }
-  ],
-  "records": {}
+  ]
 }

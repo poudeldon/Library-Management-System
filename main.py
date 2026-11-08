@@ -3,20 +3,26 @@ import hashlib
 import hmac
 import html
 import json
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlmodel import Session
 
 from accounts import create_account, verify_login
 from classes import Manage, User
-
-DATA_FILE = "data.json"
-COOKIE_NAME = "library_user"
-SECRET = "change-this-to-a-long-random-string"
-COOKIE_MAX_AGE = 60 * 60 * 8  # 8 hours
+from models import Book
+from config import SECRET, COOKIE_NAME, COOKIE_MAX_AGE
+from database import get_session, initialize_database
 
 
-app = FastAPI(title="Library Management")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    initialize_database()
+    yield
+
+
+app = FastAPI(title="Library Management", lifespan=lifespan)
 
 
 # ---------- Cookie login ----------
@@ -52,7 +58,7 @@ class NotLoggedIn(Exception):
 
 
 @app.exception_handler(NotLoggedIn)
-async def not_logged_in_handler(request: Request, exc: NotLoggedIn):
+async def not_logged_in_handler(_request: Request, _exc: NotLoggedIn):
     return RedirectResponse("/login", status_code=303)
 
 
@@ -73,8 +79,8 @@ def require_admin(info: dict = Depends(require_login)) -> dict:
     return info
 
 
-def load_user(info: dict):
-    manage = Manage.load(DATA_FILE)
+def load_user(info: dict, session: Session):
+    manage = Manage(session)
     return User(info["username"], info["role"], manage), manage
 
 
@@ -123,16 +129,16 @@ def message(msg: str, ok: bool) -> str:
     return f'<div class="msg {"ok" if ok else "err"}">{e(msg)}</div>'
 
 
-def book_info(book: dict) -> str:
+def book_info(book: Book) -> str:
     """Title, author and ISBN of one book."""
-    return (f'<span><strong>{e(book["title"])}</strong><br>'
-            f'<small class="muted">by {e(book["author"])} &middot; ISBN {e(book["isbn"])}</small></span>')
+    return (f'<span><strong>{e(book.title)}</strong><br>'
+            f'<small class="muted">by {e(book.author)} &middot; ISBN {e(book.isbn)}</small></span>')
 
 
-def book_list(books, button_label: str) -> str:
+def book_list(books: list[Book], button_label: str) -> str:
     items = "".join(
         f'<li>{book_info(b)}<form method="post">'
-        f'<input type="hidden" name="isbn" value="{e(b["isbn"])}">'
+        f'<input type="hidden" name="isbn" value="{e(b.isbn)}">'
         f'<button type="submit">{button_label}</button></form></li>'
         for b in books
     )
@@ -187,9 +193,13 @@ def login_form(request: Request):
 
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...)):
+def login(
+    username: str = Form(...),
+    password: str = Form(...),
+    session: Session = Depends(get_session),
+):
     username = username.strip().lower()
-    role = verify_login(username, password)
+    role = verify_login(session, username, password)
     if role:
         return login_redirect(username, role)
     return login_page("Invalid username or password.")
@@ -222,8 +232,9 @@ def signup(
     username: str = Form(...),
     password: str = Form(...),
     confirm: str = Form(...),
+    session: Session = Depends(get_session),
 ):
-    ok, msg = create_account(username, password, confirm)
+    ok, msg = create_account(session, username, password, confirm)
     if not ok:
         return signup_page(msg)
     # Log the new user in straight away
@@ -266,14 +277,20 @@ def borrow_page(info, manage, msg="", ok=False):
 
 
 @app.get("/borrow", response_class=HTMLResponse)
-def borrow_form(info: dict = Depends(require_login)):
-    _, manage = load_user(info)
+def borrow_form(
+    info: dict = Depends(require_login), session: Session = Depends(get_session)
+):
+    _, manage = load_user(info, session)
     return borrow_page(info, manage)
 
 
 @app.post("/borrow", response_class=HTMLResponse)
-def borrow(isbn: str = Form(""), info: dict = Depends(require_login)):
-    user, manage = load_user(info)
+def borrow(
+    isbn: str = Form(""),
+    info: dict = Depends(require_login),
+    session: Session = Depends(get_session),
+):
+    user, manage = load_user(info, session)
     ok, msg = user.take_book(isbn)
     return borrow_page(info, manage, msg, ok)
 
@@ -288,14 +305,20 @@ def return_page(info, user, msg="", ok=False):
 
 
 @app.get("/return", response_class=HTMLResponse)
-def return_form(info: dict = Depends(require_login)):
-    user, _ = load_user(info)
+def return_form(
+    info: dict = Depends(require_login), session: Session = Depends(get_session)
+):
+    user, _ = load_user(info, session)
     return return_page(info, user)
 
 
 @app.post("/return", response_class=HTMLResponse)
-def return_book(isbn: str = Form(""), info: dict = Depends(require_login)):
-    user, _ = load_user(info)
+def return_book(
+    isbn: str = Form(""),
+    info: dict = Depends(require_login),
+    session: Session = Depends(get_session),
+):
+    user, _ = load_user(info, session)
     ok, msg = user.return_book(isbn)
     return return_page(info, user, msg, ok)
 
@@ -303,8 +326,10 @@ def return_book(isbn: str = Form(""), info: dict = Depends(require_login)):
 # ---------- Routes: display ----------
 
 @app.get("/display", response_class=HTMLResponse)
-def display(info: dict = Depends(require_login)):
-    user, manage = load_user(info)
+def display(
+    info: dict = Depends(require_login), session: Session = Depends(get_session)
+):
+    user, manage = load_user(info, session)
     body = "<h1>Available books</h1>"
     body += plain_list([book_info(b) for b in manage.library.get_books()])
     body += "<h1>Books you hold</h1>"
@@ -313,8 +338,8 @@ def display(info: dict = Depends(require_login)):
     if user.is_admin():
         body += "<h1>All issued books</h1>"
         body += plain_list(
-            [f'{book_info(r["book"])}<span class="muted">taken by {e(r["user"])}</span>'
-             for r in manage.records.values()],
+            [f'{book_info(book)}<span class="muted">taken by {e(account.username)}</span>'
+             for book, account in manage.issued_books()],
             "(no books issued)",
         )
     return page("Display", body, info)
@@ -347,7 +372,14 @@ def add_book(
     title: str = Form(""),
     author: str = Form(""),
     info: dict = Depends(require_admin),
+    session: Session = Depends(get_session),
 ):
-    _, manage = load_user(info)
+    _, manage = load_user(info, session)
     ok, msg = manage.add_book(isbn, title, author)
     return add_book_page(info, msg, ok)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="localhost", port=8000, log_level="info")

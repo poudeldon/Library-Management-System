@@ -1,19 +1,15 @@
 import hashlib
 import hmac
-import json
-import os
 import re
 import secrets
 
-USERS_FILE = "users.json"
+from sqlmodel import Session, select
+
+from config import SECRET
+from models import Account
+
 USERNAME_RE = re.compile(r"^[a-z0-9_]{3,20}$")
 MIN_PASSWORD_LENGTH = 6
-
-SEED_ACCOUNTS = [
-    ("admin", "admin123", "admin"),
-    ("alice", "alice123", "user"),
-    ("bob", "bob123", "user"),
-]
 
 
 def _hash(password: str, salt_hex: str) -> str:
@@ -22,38 +18,43 @@ def _hash(password: str, salt_hex: str) -> str:
     ).hex()
 
 
-def _save(users: dict) -> None:
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, indent=2)
-
-
-def _make_record(password: str, role: str) -> dict:
+def _make_record(password: str, role: str) -> Account:
     salt = secrets.token_hex(16)
-    return {"salt": salt, "hash": _hash(password, salt), "role": role}
+    return Account(
+        username="",
+        salt=salt,
+        password_hash=_hash(password, salt),
+        role=role,
+    )
 
 
-def _load() -> dict:
-    """Loads accounts. On the very first run, creates the demo accounts."""
-    if not os.path.isfile(USERS_FILE):
-        users = {name: _make_record(pw, role) for name, pw, role in SEED_ACCOUNTS}
-        _save(users)
-        return users
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def make_seed_account(username: str, password: str, role: str) -> Account:
+    """Create a deterministic seed account from the application secret."""
+    salt = hmac.new(
+        SECRET.encode(), username.encode(), hashlib.sha256
+    ).hexdigest()[:32]
+    return Account(
+        username=username,
+        salt=salt,
+        password_hash=_hash(password, salt),
+        role=role,
+    )
 
 
-def verify_login(username: str, password: str):
-    """Returns the user's role if the credentials are correct, otherwise None."""
-    account = _load().get(username.strip().lower())
-    if not account:
+def verify_login(session: Session, username: str, password: str) -> str | None:
+    account = session.exec(
+        select(Account).where(Account.username == username.strip().lower())
+    ).first()
+    if not account or not hmac.compare_digest(
+        _hash(password, account.salt), account.password_hash
+    ):
         return None
-    if hmac.compare_digest(_hash(password, account["salt"]), account["hash"]):
-        return account["role"]
-    return None
+    return account.role
 
 
-def create_account(username: str, password: str, confirm: str):
-    """Returns (success, message). New accounts are always regular users."""
+def create_account(
+    session: Session, username: str, password: str, confirm: str
+) -> tuple[bool, str]:
     username = username.strip().lower()
 
     if not USERNAME_RE.match(username):
@@ -62,11 +63,11 @@ def create_account(username: str, password: str, confirm: str):
         return False, f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
     if password != confirm:
         return False, "Passwords do not match."
-
-    users = _load()
-    if username in users:
+    if session.exec(select(Account).where(Account.username == username)).first():
         return False, "That username is already taken."
 
-    users[username] = _make_record(password, "user")
-    _save(users)
+    account = _make_record(password, "user")
+    account.username = username
+    session.add(account)
+    session.commit()
     return True, "Account created."

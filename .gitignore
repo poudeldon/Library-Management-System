@@ -36,6 +36,8 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+library.db
+library.db-*
 nosetests.xml
 junit.xml
 cov.xml
